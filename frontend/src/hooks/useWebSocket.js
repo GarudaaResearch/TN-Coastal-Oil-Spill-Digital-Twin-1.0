@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 
 // Backend URL — override via VITE_WS_URL in .env or Netlify env settings
 const WS_URL  = import.meta.env.VITE_WS_URL  || 'ws://localhost:8000/ws/simulation'
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api'
 const RECONNECT_DELAY_MS = 2000
 
 /**

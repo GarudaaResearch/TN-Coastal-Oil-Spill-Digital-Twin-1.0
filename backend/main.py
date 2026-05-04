@@ -40,18 +40,27 @@ from api.routes                  import router
 
 class SimulationState:
     def __init__(self):
-        self.running      = False
+        self.running      = True   # AUTO-START: simulation begins immediately
         self.tick         = 0
         self.ocean        = OceanEnvironment(seed=42)
         self.oil_engine   = OilSpillEngine(self.ocean)
-        self.sensor_net   = SensorNetwork(self.ocean, n_nodes=40)
+        self.sensor_net   = SensorNetwork(self.ocean, n_nodes=45)
         self.ai_router    = AIRoutingEngine(algorithm="aco")
         self.hydrochar    = HydrocharModule()
         self.response     = ResponseSystem(self.ocean)
         self.ws_clients   = set()
         self.last_payload = {}
 
-    def reset(self, seed: int = 42, n_nodes: int = 40, algorithm: str = "aco"):
+        # ── Auto-inject demo spill: crude oil tanker incident off Chennai ──
+        # Grid position: ~80.8°E, 12.6°N  →  ~row 13, col 55 in Bay of Bengal grid
+        self.oil_engine.add_spill(
+            row=13, col=55,
+            total_mass_kg=12_000.0,
+            release_rate_kg_s=1.5,
+            label="MV Chennai Incident"
+        )
+
+    def reset(self, seed: int = 42, n_nodes: int = 45, algorithm: str = "aco"):
         self.ocean      = OceanEnvironment(seed=seed)
         self.oil_engine = OilSpillEngine(self.ocean)
         self.sensor_net = SensorNetwork(self.ocean, n_nodes=n_nodes)
@@ -59,7 +68,14 @@ class SimulationState:
         self.hydrochar  = HydrocharModule()
         self.response   = ResponseSystem(self.ocean)
         self.tick       = 0
-        self.running    = False
+        self.running    = True
+        # Re-inject demo spill after reset
+        self.oil_engine.add_spill(
+            row=13, col=55,
+            total_mass_kg=12_000.0,
+            release_rate_kg_s=1.5,
+            label="MV Chennai Incident"
+        )
 
 
 sim = SimulationState()
@@ -107,8 +123,9 @@ async def simulation_loop():
                 msg = json.dumps(payload)
 
                 # Broadcast to all connected WebSocket clients
+                # Iterate a snapshot to avoid "Set changed size during iteration"
                 dead_clients = set()
-                for ws in sim.ws_clients:
+                for ws in frozenset(sim.ws_clients):
                     try:
                         await ws.send_text(msg)
                     except Exception:
@@ -123,6 +140,7 @@ async def simulation_loop():
 
 def build_payload() -> dict:
     """Assemble full simulation state for WebSocket broadcast."""
+    import numpy as np
     return {
         "tick":        sim.tick,
         "t_seconds":   round(sim.ocean.t, 0),
@@ -133,23 +151,26 @@ def build_payload() -> dict:
         "concentration_grid": sim.oil_engine.get_concentration_grid(),
         "sensitivity_grid":   sim.ocean.sensitivity.tolist(),
         "land_mask":          sim.ocean.land_mask.tolist(),
+        "sar_slick_map":      sim.oil_engine.get_sar_slick_map(),
 
         # Module metrics
-        "oil_metrics":      sim.oil_engine.get_metrics(),
-        "wsn_metrics":      sim.sensor_net.get_metrics(),
-        "routing_metrics":  sim.ai_router.get_metrics(),
+        "oil_metrics":       sim.oil_engine.get_metrics(),
+        "wsn_metrics":       sim.sensor_net.get_metrics(),
+        "routing_metrics":   sim.ai_router.get_metrics(),
         "hydrochar_metrics": sim.hydrochar.get_metrics(),
-        "response_metrics": sim.response.get_metrics(),
+        "response_metrics":  sim.response.get_metrics(),
 
         # Agent/entity lists
         "sensor_nodes":     sim.sensor_net.get_nodes_list(),
         "hydrochar_units":  sim.hydrochar.get_units_list(),
         "response_agents":  sim.response.get_agents_list(),
 
-        # Environment
-        "wind_speed":  round(sim.ocean.wind_speed_ms, 2),
-        "wind_dir":    round(float(__import__('numpy').rad2deg(
-                            sim.ocean.wind_dir_rad)) % 360, 1),
+        # Environment & SAR
+        "wind_speed":    round(sim.ocean.wind_speed_ms, 2),
+        "wind_dir":      round(float(np.rad2deg(sim.ocean.wind_dir_rad)) % 360, 1),
+        "sar_pass":      sim.ocean.sar_pass_active,
+        "sar_detected":  sim.oil_engine.sar_detected,
+        "sar_area_km2": round(sim.oil_engine.sar_slick_area_km2, 2),
     }
 
 
